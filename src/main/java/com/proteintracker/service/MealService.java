@@ -44,7 +44,7 @@ public class MealService {
                 .build();
 
         AIMealAnalysisService.EstimatedMeal estimate = aiMealAnalysisService.analyzeMealPhoto(
-                storedFilename, photo.getOriginalFilename());
+                photo, storedFilename);
         
         meal.setDescription(estimate.description);
         meal.setMealType(estimate.mealType);

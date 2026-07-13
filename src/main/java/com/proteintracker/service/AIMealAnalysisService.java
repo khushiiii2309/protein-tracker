@@ -2,7 +2,10 @@ package com.proteintracker.service;
 
 import com.proteintracker.entity.FoodItem;
 import com.proteintracker.entity.Meal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -10,6 +13,14 @@ import java.util.Locale;
 
 @Service
 public class AIMealAnalysisService {
+
+    private static final Logger log = LoggerFactory.getLogger(AIMealAnalysisService.class);
+
+    private final AnthropicVisionService visionService;
+
+    public AIMealAnalysisService(AnthropicVisionService visionService) {
+        this.visionService = visionService;
+    }
 
     public static class EstimatedMeal {
         public String description;
@@ -20,6 +31,9 @@ public class AIMealAnalysisService {
         public double totalFatG;
         public double confidenceScore;
         public List<EstimatedFoodItem> foodItems;
+
+        public EstimatedMeal() {
+        }
 
         public EstimatedMeal(String description, String mealType, double totalProteinG, double totalCaloriesKcal,
                              double totalCarbsG, double totalFatG, double confidenceScore, List<EstimatedFoodItem> foodItems) {
@@ -43,6 +57,9 @@ public class AIMealAnalysisService {
         public double carbsG;
         public double fatG;
 
+        public EstimatedFoodItem() {
+        }
+
         public EstimatedFoodItem(String foodName, double estimatedQuantity, String unit, double proteinG,
                                  double caloriesKcal, double carbsG, double fatG) {
             this.foodName = foodName;
@@ -55,7 +72,44 @@ public class AIMealAnalysisService {
         }
     }
 
-    public EstimatedMeal analyzeMealPhoto(String filename, String originalFilename) {
+    /**
+     * Analyzes an uploaded meal photo. Uses the Anthropic vision API when an API key
+     * is configured; falls back to a filename-based heuristic if no key is set, the
+     * call fails, or the model response can't be parsed - so meal upload never breaks.
+     */
+    public EstimatedMeal analyzeMealPhoto(MultipartFile photo, String storedFilename) {
+        if (visionService.isConfigured()) {
+            try {
+                byte[] imageBytes = photo.getBytes();
+                String mediaType = resolveMediaType(photo.getContentType());
+                EstimatedMeal result = visionService.analyze(imageBytes, mediaType);
+                if (result != null && result.foodItems != null && !result.foodItems.isEmpty()) {
+                    return result;
+                }
+                log.warn("Anthropic vision response missing expected fields, falling back to heuristic estimate");
+            } catch (Exception e) {
+                log.warn("Anthropic vision analysis failed ({}), falling back to heuristic estimate", e.getMessage());
+            }
+        }
+        return analyzeMealPhotoHeuristic(storedFilename, photo.getOriginalFilename());
+    }
+
+    private String resolveMediaType(String contentType) {
+        if (contentType == null) {
+            return "image/jpeg";
+        }
+        return switch (contentType) {
+            case "image/png", "image/gif", "image/webp", "image/jpeg" -> contentType;
+            default -> "image/jpeg";
+        };
+    }
+
+    /**
+     * Deterministic fallback used when the vision API is unavailable: matches
+     * keywords in the filename, or otherwise rotates through canned estimates
+     * based on a hash of the filename so the same file always yields the same result.
+     */
+    private EstimatedMeal analyzeMealPhotoHeuristic(String filename, String originalFilename) {
         String nameLower = (originalFilename != null ? originalFilename : filename).toLowerCase(Locale.ROOT);
 
         // Predefined estimations

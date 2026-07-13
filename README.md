@@ -24,14 +24,19 @@ build step, no framework.
 
 Being upfront about this, since it matters for anyone evaluating the code:
 
-- **Meal photo analysis is currently a heuristic, not a vision model.**
+- **Meal photo analysis calls Claude's vision API for real.**
+  [`AnthropicVisionService`](src/main/java/com/proteintracker/service/AnthropicVisionService.java)
+  sends the uploaded image to the Anthropic Messages API and asks for a
+  structured JSON estimate (dish description, meal type, macros, per-item
+  breakdown, confidence score). This only runs when `ANTHROPIC_API_KEY` is
+  set — see Configuration below.
+- **Automatic fallback when no key is configured, or the API call fails.**
   [`AIMealAnalysisService`](src/main/java/com/proteintracker/service/AIMealAnalysisService.java)
-  matches keywords in the uploaded filename (or falls back to a deterministic
-  hash-based rotation through a handful of canned meals) — it does not look
-  at the actual image contents yet. The upload → review → confirm flow, the
-  data model, and the UI are all built around a real vision-AI call; wiring
-  one in is the next step (see Roadmap).
-- **Suggestions/coaching are rule-based**, not model-generated —
+  catches any vision-API error (missing key, network failure, malformed
+  response) and falls back to a deterministic heuristic that matches
+  keywords in the filename, so meal upload always succeeds even without a
+  key or if Anthropic is unreachable.
+- **Suggestions/coaching are still rule-based**, not model-generated —
   [`AISuggestionService`](src/main/java/com/proteintracker/service/AISuggestionService.java)
   is time-of-day + remaining-macros logic.
 - Everything else (auth, persistence, streaks, goals, journal) is fully
@@ -79,6 +84,16 @@ beyond local testing, set a real secret via environment variable:
 JWT_SECRET=<32+ byte random string> mvn spring-boot:run
 ```
 
+To enable real AI meal analysis, set an Anthropic API key before starting
+the app:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... mvn spring-boot:run
+```
+
+Without it, meal uploads still work — they just use the heuristic fallback
+estimator instead of a real vision call (see "What's real vs. simulated").
+
 ## API
 
 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for the full endpoint
@@ -87,8 +102,6 @@ PowerShell/curl examples.
 
 ## Known limitations / roadmap
 
-- [ ] Wire `AIMealAnalysisService` to a real vision model (send image bytes,
-      get back structured macro estimates) instead of filename matching
 - [ ] Automated test coverage (`src/test` is currently empty)
 - [ ] `/uploads/**` is served without per-user access control (photo
       filenames are unguessable UUIDs, but there's no ownership check)
