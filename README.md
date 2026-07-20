@@ -24,18 +24,18 @@ build step, no framework.
 
 Being upfront about this, since it matters for anyone evaluating the code:
 
-- **Meal photo analysis calls Claude's vision API for real.**
-  [`AnthropicVisionService`](src/main/java/com/proteintracker/service/AnthropicVisionService.java)
-  sends the uploaded image to the Anthropic Messages API and asks for a
-  structured JSON estimate (dish description, meal type, macros, per-item
-  breakdown, confidence score). This only runs when `ANTHROPIC_API_KEY` is
-  set — see Configuration below.
+- **Meal photo analysis calls Google's Gemini vision API for real.**
+  [`GeminiVisionService`](src/main/java/com/proteintracker/service/GeminiVisionService.java)
+  sends the uploaded image to the Gemini API and asks for a structured JSON
+  estimate (dish description, meal type, macros, per-item breakdown,
+  confidence score). This only runs when `GEMINI_API_KEY` is set — see
+  Configuration below.
 - **Automatic fallback when no key is configured, or the API call fails.**
   [`AIMealAnalysisService`](src/main/java/com/proteintracker/service/AIMealAnalysisService.java)
   catches any vision-API error (missing key, network failure, malformed
   response) and falls back to a deterministic heuristic that matches
   keywords in the filename, so meal upload always succeeds even without a
-  key or if Anthropic is unreachable.
+  key or if Gemini is unreachable.
 - **Suggestions/coaching are still rule-based**, not model-generated —
   [`AISuggestionService`](src/main/java/com/proteintracker/service/AISuggestionService.java)
   is time-of-day + remaining-macros logic.
@@ -84,11 +84,11 @@ beyond local testing, set a real secret via environment variable:
 JWT_SECRET=<32+ byte random string> mvn spring-boot:run
 ```
 
-To enable real AI meal analysis, set an Anthropic API key before starting
-the app:
+To enable real AI meal analysis, set a Gemini API key before starting
+the app (or put it in a local `.env` file — see `.env.example`):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... mvn spring-boot:run
+GEMINI_API_KEY=... mvn spring-boot:run
 ```
 
 Without it, meal uploads still work — they just use the heuristic fallback

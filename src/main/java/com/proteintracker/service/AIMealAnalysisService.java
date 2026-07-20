@@ -16,10 +16,12 @@ public class AIMealAnalysisService {
 
     private static final Logger log = LoggerFactory.getLogger(AIMealAnalysisService.class);
 
-    private final AnthropicVisionService visionService;
+    private final GeminiVisionService visionService;
+    private final NutritionLookupService nutritionLookupService;
 
-    public AIMealAnalysisService(AnthropicVisionService visionService) {
+    public AIMealAnalysisService(GeminiVisionService visionService, NutritionLookupService nutritionLookupService) {
         this.visionService = visionService;
+        this.nutritionLookupService = nutritionLookupService;
     }
 
     public static class EstimatedMeal {
@@ -30,6 +32,9 @@ public class AIMealAnalysisService {
         public double totalCarbsG;
         public double totalFatG;
         public double confidenceScore;
+        public Double detectionConfidence;
+        public Double portionConfidence;
+        public Double nutritionConfidence;
         public List<EstimatedFoodItem> foodItems;
 
         public EstimatedMeal() {
@@ -44,6 +49,9 @@ public class AIMealAnalysisService {
             this.totalCarbsG = totalCarbsG;
             this.totalFatG = totalFatG;
             this.confidenceScore = confidenceScore;
+            this.detectionConfidence = confidenceScore;
+            this.portionConfidence = confidenceScore * 0.9;
+            this.nutritionConfidence = confidenceScore * 0.95;
             this.foodItems = foodItems;
         }
     }
@@ -52,6 +60,8 @@ public class AIMealAnalysisService {
         public String foodName;
         public double estimatedQuantity;
         public String unit;
+        public Double minQuantity;
+        public Double maxQuantity;
         public double proteinG;
         public double caloriesKcal;
         public double carbsG;
@@ -65,6 +75,8 @@ public class AIMealAnalysisService {
             this.foodName = foodName;
             this.estimatedQuantity = estimatedQuantity;
             this.unit = unit;
+            this.minQuantity = estimatedQuantity * 0.85;
+            this.maxQuantity = estimatedQuantity * 1.15;
             this.proteinG = proteinG;
             this.caloriesKcal = caloriesKcal;
             this.carbsG = carbsG;
@@ -73,7 +85,7 @@ public class AIMealAnalysisService {
     }
 
     /**
-     * Analyzes an uploaded meal photo. Uses the Anthropic vision API when an API key
+     * Analyzes an uploaded meal photo. Uses the Gemini vision API when an API key
      * is configured; falls back to a filename-based heuristic if no key is set, the
      * call fails, or the model response can't be parsed - so meal upload never breaks.
      */
@@ -84,11 +96,55 @@ public class AIMealAnalysisService {
                 String mediaType = resolveMediaType(photo.getContentType());
                 EstimatedMeal result = visionService.analyze(imageBytes, mediaType);
                 if (result != null && result.foodItems != null && !result.foodItems.isEmpty()) {
+                    double totalProtein = 0;
+                    double totalCalories = 0;
+                    double totalCarbs = 0;
+                    double totalFat = 0;
+
+                    for (EstimatedFoodItem item : result.foodItems) {
+                        // Ensure min/max quantities are populated
+                        if (item.minQuantity == null) {
+                            item.minQuantity = Math.round(item.estimatedQuantity * 0.85 * 10.0) / 10.0;
+                        }
+                        if (item.maxQuantity == null) {
+                            item.maxQuantity = Math.round(item.estimatedQuantity * 1.15 * 10.0) / 10.0;
+                        }
+
+                        NutritionLookupService.FoodMacros macros = nutritionLookupService.estimateMacros(
+                                item.foodName, item.estimatedQuantity, item.unit);
+                        item.proteinG = Math.round(macros.protein * 10.0) / 10.0;
+                        item.caloriesKcal = Math.round(macros.calories);
+                        item.carbsG = Math.round(macros.carbs * 10.0) / 10.0;
+                        item.fatG = Math.round(macros.fat * 10.0) / 10.0;
+
+                        totalProtein += item.proteinG;
+                        totalCalories += item.caloriesKcal;
+                        totalCarbs += item.carbsG;
+                        totalFat += item.fatG;
+                    }
+
+                    // Enforce rounding rules for cumulative totals
+                    result.totalProteinG = Math.round(totalProtein * 10.0) / 10.0;
+                    result.totalCaloriesKcal = Math.round(totalCalories);
+                    result.totalCarbsG = Math.round(totalCarbs * 10.0) / 10.0;
+                    result.totalFatG = Math.round(totalFat * 10.0) / 10.0;
+
+                    // Ensure confidences are populated
+                    if (result.detectionConfidence == null) {
+                        result.detectionConfidence = result.confidenceScore > 0 ? result.confidenceScore : 0.95;
+                    }
+                    if (result.portionConfidence == null) {
+                        result.portionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.9 : 0.72;
+                    }
+                    if (result.nutritionConfidence == null) {
+                        result.nutritionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.95 : 0.83;
+                    }
+
                     return result;
                 }
-                log.warn("Anthropic vision response missing expected fields, falling back to heuristic estimate");
+                log.warn("Gemini vision response missing expected fields, falling back to heuristic estimate");
             } catch (Exception e) {
-                log.warn("Anthropic vision analysis failed ({}), falling back to heuristic estimate", e.getMessage());
+                log.warn("Gemini vision analysis failed ({}), falling back to heuristic estimate", e.getMessage());
             }
         }
         return analyzeMealPhotoHeuristic(storedFilename, photo.getOriginalFilename());

@@ -53,6 +53,9 @@ public class MealService {
         meal.setTotalCarbsG(estimate.totalCarbsG);
         meal.setTotalFatG(estimate.totalFatG);
         meal.setConfidenceScore(estimate.confidenceScore);
+        meal.setDetectionConfidence(estimate.detectionConfidence);
+        meal.setPortionConfidence(estimate.portionConfidence);
+        meal.setNutritionConfidence(estimate.nutritionConfidence);
 
         List<FoodItem> items = new ArrayList<>();
         for (AIMealAnalysisService.EstimatedFoodItem estItem : estimate.foodItems) {
@@ -60,6 +63,8 @@ public class MealService {
                     .meal(meal)
                     .foodName(estItem.foodName)
                     .estimatedQuantity(estItem.estimatedQuantity)
+                    .minQuantity(estItem.minQuantity)
+                    .maxQuantity(estItem.maxQuantity)
                     .unit(estItem.unit)
                     .proteinG(estItem.proteinG)
                     .caloriesKcal(estItem.caloriesKcal)
@@ -146,7 +151,7 @@ public class MealService {
                 .map(fi -> new FoodItemResponse(
                         fi.getId(), fi.getFoodName(), fi.getEstimatedQuantity(), fi.getUnit(),
                         fi.getProteinG(), fi.getCaloriesKcal(), fi.getCarbsG(), fi.getFatG(),
-                        fi.getUserConfirmed()))
+                        fi.getUserConfirmed(), fi.getMinQuantity(), fi.getMaxQuantity()))
                 .toList();
 
         return new MealResponse(
@@ -154,7 +159,9 @@ public class MealService {
                 meal.getMealType(), meal.getDescription(),
                 meal.getTotalProteinG(), meal.getTotalCaloriesKcal(),
                 meal.getTotalCarbsG(), meal.getTotalFatG(),
-                meal.getConfidenceScore(), items);
+                meal.getConfidenceScore(),
+                meal.getDetectionConfidence(), meal.getPortionConfidence(), meal.getNutritionConfidence(),
+                items);
     }
 
     public JournalResponse getJournal(int daysBack) {
@@ -224,6 +231,8 @@ public class MealService {
                         .meal(meal)
                         .foodName(itemReq.foodName())
                         .estimatedQuantity(itemReq.estimatedQuantity())
+                        .minQuantity(itemReq.minQuantity())
+                        .maxQuantity(itemReq.maxQuantity())
                         .unit(itemReq.unit())
                         .proteinG(itemReq.proteinG())
                         .caloriesKcal(itemReq.caloriesKcal())

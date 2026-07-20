@@ -17,16 +17,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Calls the Anthropic Messages API with a meal photo and asks Claude to
- * return a structured macro/ingredient estimate as JSON.
+ * Calls the Google Gemini API with a meal photo and asks for a structured
+ * macro/ingredient estimate as JSON.
  */
 @Component
-public class AnthropicVisionService {
+public class GeminiVisionService {
 
-    private static final Logger log = LoggerFactory.getLogger(AnthropicVisionService.class);
+    private static final Logger log = LoggerFactory.getLogger(GeminiVisionService.class);
 
-    private static final String API_URL = "https://api.anthropic.com/v1/messages";
-    private static final String ANTHROPIC_VERSION = "2023-06-01";
+    private static final String API_URL_TEMPLATE =
+            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s";
 
     private static final String SYSTEM_PROMPT = """
             You are a nutrition estimation assistant for a meal-tracking app. You will be \
@@ -37,27 +37,26 @@ public class AnthropicVisionService {
             {
               "description": string (short dish name, e.g. "Grilled Chicken Bowl"),
               "mealType": string (one of "Breakfast", "Lunch", "Dinner", "Snack" - infer from the food),
-              "totalProteinG": number,
-              "totalCaloriesKcal": number,
-              "totalCarbsG": number,
-              "totalFatG": number,
-              "confidenceScore": number (0.0 to 1.0 - how confident you are in this estimate),
+              "confidenceScore": number (0.0 to 1.0 - overall detection confidence),
+              "detectionConfidence": number (0.0 to 1.0 - confidence in detecting ingredients),
+              "portionConfidence": number (0.0 to 1.0 - confidence in portion size estimates),
+              "nutritionConfidence": number (0.0 to 1.0 - confidence in nutrition resolution lookup),
               "foodItems": [
                 {
                   "foodName": string,
-                  "estimatedQuantity": number,
-                  "unit": string (e.g. "g", "piece", "cup"),
-                  "proteinG": number,
-                  "caloriesKcal": number,
-                  "carbsG": number,
-                  "fatG": number
+                  "estimatedQuantity": number (the likely cooked portion weight or quantity),
+                  "minQuantity": number (minimum expected portion weight/quantity),
+                  "maxQuantity": number (maximum expected portion weight/quantity),
+                  "unit": string (e.g. "g", "piece", "cup")
                 }
               ]
             }
 
-            The four total* fields must equal the sum of the corresponding foodItems values. \
-            If the image does not clearly show food, still return your best-guess JSON with a \
-            low confidenceScore rather than refusing.
+            Do NOT guess or estimate calories, protein, carbs, or fat. Focus entirely on \
+            identifying the ingredients and estimating their cooked weights or portion sizes \
+            with a realistic range (minQuantity and maxQuantity). \
+            If the image does not clearly show food, still return your best-guess JSON with \
+            low confidence scores rather than refusing.
             """;
 
     private final String apiKey;
@@ -65,9 +64,9 @@ public class AnthropicVisionService {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    public AnthropicVisionService(
-            @Value("${app.ai.anthropic.api-key:}") String apiKey,
-            @Value("${app.ai.anthropic.model:claude-sonnet-5}") String model) {
+    public GeminiVisionService(
+            @Value("${app.ai.gemini.api-key:}") String apiKey,
+            @Value("${app.ai.gemini.model:gemini-3.5-flash}") String model) {
         this.apiKey = apiKey;
         this.model = model;
         this.httpClient = HttpClient.newBuilder()
@@ -84,29 +83,29 @@ public class AnthropicVisionService {
         String base64Image = Base64.getEncoder().encodeToString(imageBytes);
 
         Map<String, Object> requestBody = Map.of(
-                "model", model,
-                "max_tokens", 1024,
-                "system", SYSTEM_PROMPT,
-                "messages", List.of(Map.of(
+                "system_instruction", Map.of(
+                        "parts", List.of(Map.of("text", SYSTEM_PROMPT))
+                ),
+                "contents", List.of(Map.of(
                         "role", "user",
-                        "content", List.of(
-                                Map.of(
-                                        "type", "image",
-                                        "source", Map.of(
-                                                "type", "base64",
-                                                "media_type", mediaType,
-                                                "data", base64Image
-                                        )
-                                ),
-                                Map.of("type", "text", "text", "Analyze this meal photo.")
+                        "parts", List.of(
+                                Map.of("inline_data", Map.of(
+                                        "mime_type", mediaType,
+                                        "data", base64Image
+                                )),
+                                Map.of("text", "Analyze this meal photo.")
                         )
-                ))
+                )),
+                "generationConfig", Map.of(
+                        "temperature", 0.2,
+                        "maxOutputTokens", 1024
+                )
         );
 
+        String url = String.format(API_URL_TEMPLATE, model, apiKey);
+
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", ANTHROPIC_VERSION)
+                .uri(URI.create(url))
                 .header("content-type", "application/json")
                 .timeout(Duration.ofSeconds(45))
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
@@ -116,22 +115,27 @@ public class AnthropicVisionService {
 
         if (response.statusCode() != 200) {
             throw new IllegalStateException(
-                    "Anthropic API returned HTTP " + response.statusCode() + ": " + truncate(response.body()));
+                    "Gemini API returned HTTP " + response.statusCode() + ": " + truncate(response.body()));
         }
 
         JsonNode root = objectMapper.readTree(response.body());
-        JsonNode contentArray = root.path("content");
-        if (!contentArray.isArray() || contentArray.isEmpty()) {
-            throw new IllegalStateException("Anthropic API response had no content: " + truncate(response.body()));
+        JsonNode candidates = root.path("candidates");
+        if (!candidates.isArray() || candidates.isEmpty()) {
+            throw new IllegalStateException("Gemini API response had no candidates: " + truncate(response.body()));
         }
 
-        String text = contentArray.get(0).path("text").asText();
+        JsonNode parts = candidates.get(0).path("content").path("parts");
+        if (!parts.isArray() || parts.isEmpty()) {
+            throw new IllegalStateException("Gemini API response had no content parts: " + truncate(response.body()));
+        }
+
+        String text = parts.get(0).path("text").asText();
         String jsonText = extractJsonObject(text);
 
         AIMealAnalysisService.EstimatedMeal result =
                 objectMapper.readValue(jsonText, AIMealAnalysisService.EstimatedMeal.class);
 
-        log.info("Anthropic vision analysis succeeded: {} ({} items, confidence {})",
+        log.info("Gemini vision analysis succeeded: {} ({} items, confidence {})",
                 result.description, result.foodItems == null ? 0 : result.foodItems.size(), result.confidenceScore);
         return result;
     }

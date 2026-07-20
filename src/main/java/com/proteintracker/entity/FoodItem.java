@@ -28,6 +28,9 @@ public class FoodItem {
     /** Quantity in the given unit, e.g. 2 (rotis) or 250 (grams) */
     private Double estimatedQuantity;
 
+    private Double minQuantity;
+    private Double maxQuantity;
+
     /** e.g. "piece", "bowl", "g", "ml" */
     private String unit;
 

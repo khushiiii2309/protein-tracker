@@ -19,6 +19,8 @@ public record MealUpdateRequest(
             Double caloriesKcal,
             Double carbsG,
             Double fatG,
-            Boolean userConfirmed
+            Boolean userConfirmed,
+            Double minQuantity,
+            Double maxQuantity
     ) {}
 }

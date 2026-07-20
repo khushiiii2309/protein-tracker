@@ -16,7 +16,9 @@ public class MealDtos {
             Double caloriesKcal,
             Double carbsG,
             Double fatG,
-            Boolean userConfirmed
+            Boolean userConfirmed,
+            Double minQuantity,
+            Double maxQuantity
     ) {}
 
     public record MealResponse(
@@ -31,6 +33,9 @@ public class MealDtos {
             Double totalCarbsG,
             Double totalFatG,
             Double confidenceScore,
+            Double detectionConfidence,
+            Double portionConfidence,
+            Double nutritionConfidence,
             List<FoodItemResponse> foodItems
     ) {}
 

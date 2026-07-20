@@ -658,7 +658,7 @@
 
         .food-item-row {
             display: grid;
-            grid-template-columns: 4fr 2fr 2fr 1fr;
+            grid-template-columns: auto 4fr 2.5fr 2fr 1fr;
             gap: 10px;
             margin-bottom: 10px;
             align-items: center;
@@ -965,9 +965,13 @@
 
                 <!-- AI SCANNING & REVIEW EDIT FORM (Visible after photo submission) -->
                 <div id="aiReviewCard" class="card hidden">
-                    <div class="card-title">
-                        <span>🤖 Reppy's AI Scan Review</span>
-                        <span id="scanConfidence" style="font-size: 0.75em; color: var(--accent-color); font-weight: 500;"></span>
+                    <div class="card-title" style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+                        <span style="font-size: 1.2em;">🤖 Reppy's AI Scan Review</span>
+                        <div id="confidenceScores" style="display: flex; gap: 10px; font-size: 0.8em; flex-wrap: wrap;">
+                            <span id="detConfidence" class="macro-badge" style="background: rgba(203, 255, 77, 0.05); color: var(--accent-color); border-color: rgba(203, 255, 77, 0.12);">🔍 Detection: --</span>
+                            <span id="portConfidence" class="macro-badge" style="background: rgba(203, 255, 77, 0.05); color: var(--accent-color); border-color: rgba(203, 255, 77, 0.12);">⚖️ Portion: --</span>
+                            <span id="nutConfidence" class="macro-badge" style="background: rgba(203, 255, 77, 0.05); color: var(--accent-color); border-color: rgba(203, 255, 77, 0.12);">🧬 Nutrition: --</span>
+                        </div>
                     </div>
 
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
@@ -1681,8 +1685,13 @@
             document.getElementById('editCarbs').value = meal.totalCarbsG || 0;
             document.getElementById('editFat').value = meal.totalFatG || 0;
             
-            const confPct = meal.confidenceScore ? Math.round(meal.confidenceScore * 100) : 85;
-            document.getElementById('scanConfidence').textContent = '🤖 Match Score: ' + confPct + '%';
+            const detPct = meal.detectionConfidence ? Math.round(meal.detectionConfidence * 100) : (meal.confidenceScore ? Math.round(meal.confidenceScore * 100) : 95);
+            const portPct = meal.portionConfidence ? Math.round(meal.portionConfidence * 100) : (meal.confidenceScore ? Math.round(meal.confidenceScore * 90) : 72);
+            const nutPct = meal.nutritionConfidence ? Math.round(meal.nutritionConfidence * 100) : (meal.confidenceScore ? Math.round(meal.confidenceScore * 95) : 83);
+            
+            document.getElementById('detConfidence').textContent = '🔍 Detection: ' + detPct + '%';
+            document.getElementById('portConfidence').textContent = '⚖️ Portion: ' + portPct + '%';
+            document.getElementById('nutConfidence').textContent = '🧬 Nutrition: ' + nutPct + '%';
 
             // Render ingredients list
             const ingContainer = document.getElementById('ingredientsList');
@@ -1690,37 +1699,83 @@
             
             if (meal.foodItems && meal.foodItems.length > 0) {
                 meal.foodItems.forEach(item => {
-                    addIngredientRow(item.foodName, item.estimatedQuantity, item.unit, item.proteinG, item.caloriesKcal, item.carbsG, item.fatG);
+                    const isConfirmed = item.userConfirmed !== undefined ? item.userConfirmed : true;
+                    addIngredientRow(item.foodName, item.estimatedQuantity, item.unit, item.proteinG, item.caloriesKcal, item.carbsG, item.fatG, isConfirmed, item.minQuantity, item.maxQuantity);
                 });
             } else {
-                addIngredientRow('Food Item', 1, 'serving', meal.totalProteinG, meal.totalCaloriesKcal, meal.totalCarbsG, meal.totalFatG);
+                addIngredientRow('Food Item', 1, 'serving', meal.totalProteinG, meal.totalCaloriesKcal, meal.totalCarbsG, meal.totalFatG, true);
             }
         }
 
-        function addIngredientRow(name='', qty=1, unit='serving', protein=0, cals=0, carbs=0, fat=0) {
+        function addIngredientRow(name='', qty=1, unit='g', protein=0, cals=0, carbs=0, fat=0, confirmed=true, minQty=null, maxQty=null) {
             const list = document.getElementById('ingredientsList');
             const row = document.createElement('div');
             row.className = 'food-item-row';
+            
+            // Visual helper for range
+            let rangeDisplay = '';
+            if (minQty !== null && maxQty !== null && minQty !== undefined && maxQty !== undefined) {
+                rangeDisplay = `<span class="qty-range-helper" style="font-size: 0.72em; color: var(--text-muted); display: block; margin-top: 2px;">(${Math.round(minQty)}–${Math.round(maxQty)} ${unit})</span>`;
+            }
+            
+            // Pre-calculate density of macros per unit quantity
+            const pDensity = qty > 0 ? protein / qty : 0;
+            const cDensity = qty > 0 ? cals / qty : 0;
+            const cbDensity = qty > 0 ? carbs / qty : 0;
+            const fDensity = qty > 0 ? fat / qty : 0;
+
             row.innerHTML = `
+                <input type="checkbox" class="ing-confirmed" ${confirmed ? 'checked' : ''} onchange="calculateTotalMacros()" style="width: 18px; height: 18px; accent-color: var(--accent-color); cursor: pointer;" title="Confirm ingredient">
                 <input type="text" placeholder="Ingredient" value="${name}" class="ing-name">
-                <input type="number" step="0.1" placeholder="Qty" value="${qty}" class="ing-qty">
-                <input type="text" placeholder="Unit" value="${unit}" class="ing-unit">
+                <div style="display: flex; flex-direction: column;">
+                    <input type="number" step="0.1" placeholder="Qty" value="${qty}" class="ing-qty" oninput="calculateTotalMacros()">
+                    ${rangeDisplay}
+                </div>
+                <input type="text" placeholder="Unit" value="${unit}" class="ing-unit" onchange="calculateTotalMacros()">
                 <button type="button" class="remove-row-btn" onclick="this.parentElement.remove(); calculateTotalMacros();" title="Remove ingredient">✕</button>
                 
-                <!-- Hidden inputs for macro calculations per food item -->
-                <input type="hidden" class="ing-protein" value="${protein}">
-                <input type="hidden" class="ing-cals" value="${cals}">
-                <input type="hidden" class="ing-carbs" value="${carbs}">
-                <input type="hidden" class="ing-fat" value="${fat}">
+                <!-- Hidden fields to store density multipliers for live edits -->
+                <input type="hidden" class="ing-protein-density" value="${pDensity}">
+                <input type="hidden" class="ing-cals-density" value="${cDensity}">
+                <input type="hidden" class="ing-carbs-density" value="${cbDensity}">
+                <input type="hidden" class="ing-fat-density" value="${fDensity}">
+                <input type="hidden" class="ing-min-qty" value="${minQty || ''}">
+                <input type="hidden" class="ing-max-qty" value="${maxQty || ''}">
             `;
             list.appendChild(row);
         }
 
         // Live calculation of main inputs when row contents update
         function calculateTotalMacros() {
-            // Note: In case of manual edits, let the user change the inputs directly.
-            // If they change row macros we could calculate, but to keep things simple
-            // we will let the user freely edit the overall inputs directly.
+            let totalProtein = 0;
+            let totalCals = 0;
+            let totalCarbs = 0;
+            let totalFat = 0;
+
+            const rows = document.querySelectorAll('.food-item-row');
+            rows.forEach(row => {
+                const confirmedCheckBox = row.querySelector('.ing-confirmed');
+                const confirmed = confirmedCheckBox ? confirmedCheckBox.checked : true;
+                if (confirmed) {
+                    const qtyInput = row.querySelector('.ing-qty');
+                    const qty = qtyInput ? (parseFloat(qtyInput.value) || 0) : 0;
+
+                    const pDensity = parseFloat(row.querySelector('.ing-protein-density')?.value || 0);
+                    const cDensity = parseFloat(row.querySelector('.ing-cals-density')?.value || 0);
+                    const cbDensity = parseFloat(row.querySelector('.ing-carbs-density')?.value || 0);
+                    const fDensity = parseFloat(row.querySelector('.ing-fat-density')?.value || 0);
+
+                    totalProtein += qty * pDensity;
+                    totalCals += qty * cDensity;
+                    totalCarbs += qty * cbDensity;
+                    totalFat += qty * fDensity;
+                }
+            });
+
+            document.getElementById('editProtein').value = (Math.round(totalProtein * 10) / 10).toFixed(1);
+            document.getElementById('editCalories').value = Math.round(totalCals);
+            document.getElementById('editCarbs').value = (Math.round(totalCarbs * 10) / 10).toFixed(1);
+            document.getElementById('editFat').value = (Math.round(totalFat * 10) / 10).toFixed(1);
         }
 
         function cancelScanReview() {
@@ -1746,19 +1801,28 @@
                 const name = row.querySelector('.ing-name').value;
                 const qty = parseFloat(row.querySelector('.ing-qty').value) || 1.0;
                 const unit = row.querySelector('.ing-unit').value;
-                const p = parseFloat(row.querySelector('.ing-protein').value) || 0;
-                const c = parseFloat(row.querySelector('.ing-cals').value) || 0;
-                const cb = parseFloat(row.querySelector('.ing-carbs').value) || 0;
-                const f = parseFloat(row.querySelector('.ing-fat').value) || 0;
+                
+                const confirmed = row.querySelector('.ing-confirmed').checked;
+
+                const pDensity = parseFloat(row.querySelector('.ing-protein-density')?.value || 0);
+                const cDensity = parseFloat(row.querySelector('.ing-cals-density')?.value || 0);
+                const cbDensity = parseFloat(row.querySelector('.ing-carbs-density')?.value || 0);
+                const fDensity = parseFloat(row.querySelector('.ing-fat-density')?.value || 0);
+
+                const minQty = parseFloat(row.querySelector('.ing-min-qty')?.value || qty * 0.85);
+                const maxQty = parseFloat(row.querySelector('.ing-max-qty')?.value || qty * 1.15);
+
                 return {
                     foodName: name,
                     estimatedQuantity: qty,
                     unit: unit,
-                    proteinG: p,
-                    caloriesKcal: c,
-                    carbsG: cb,
-                    fatG: f,
-                    userConfirmed: true
+                    proteinG: Math.round(qty * pDensity * 10) / 10,
+                    caloriesKcal: Math.round(qty * cDensity),
+                    carbsG: Math.round(qty * cbDensity * 10) / 10,
+                    fatG: Math.round(qty * fDensity * 10) / 10,
+                    userConfirmed: confirmed,
+                    minQuantity: minQty,
+                    maxQuantity: maxQty
                 };
             });
 

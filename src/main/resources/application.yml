@@ -30,7 +30,9 @@ app:
     secret: ${JWT_SECRET:dev-only-change-this-secret-key-before-production-use-32bytes-min}
     expiration-ms: 86400000 # 24h
   ai:
-    anthropic:
+    gemini:
       # Leave unset to run on the heuristic fallback estimator instead of a real vision call.
-      api-key: ${ANTHROPIC_API_KEY:}
-      model: ${ANTHROPIC_MODEL:claude-sonnet-5}
+      api-key: ${GEMINI_API_KEY:}
+      model: ${GEMINI_MODEL:gemini-3.5-flash}
+    usda:
+      api-key: ${USDA_API_KEY:DEMO_KEY}

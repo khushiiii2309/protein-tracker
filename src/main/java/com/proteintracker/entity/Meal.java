@@ -48,6 +48,10 @@ public class Meal {
     /** 0.0 - 1.0 confidence score from the AI estimation step */
     private Double confidenceScore;
 
+    private Double detectionConfidence;
+    private Double portionConfidence;
+    private Double nutritionConfidence;
+
     @OneToMany(mappedBy = "meal", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<FoodItem> foodItems = new ArrayList<>();
