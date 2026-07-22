@@ -111,7 +111,7 @@ public class GeminiVisionService {
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
                 .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithRetry(request);
 
         if (response.statusCode() != 200) {
             throw new IllegalStateException(
@@ -138,6 +138,20 @@ public class GeminiVisionService {
         log.info("Gemini vision analysis succeeded: {} ({} items, confidence {})",
                 result.description, result.foodItems == null ? 0 : result.foodItems.size(), result.confidenceScore);
         return result;
+    }
+
+    private HttpResponse<String> sendWithRetry(HttpRequest request) throws Exception {
+        int maxAttempts = 3;
+        HttpResponse<String> response = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 503 || attempt == maxAttempts) {
+                return response;
+            }
+            log.warn("Gemini API returned 503 (attempt {}/{}), retrying after backoff", attempt, maxAttempts);
+            Thread.sleep(1000L * attempt);
+        }
+        return response;
     }
 
     private String extractJsonObject(String text) {
