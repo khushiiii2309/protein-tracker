@@ -34,5 +34,8 @@ app:
       # Leave unset to run on the heuristic fallback estimator instead of a real vision call.
       api-key: ${GEMINI_API_KEY:}
       model: ${GEMINI_MODEL:gemini-3.5-flash}
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      model: ${ANTHROPIC_MODEL:claude-3-5-sonnet-20241022}
     usda:
       api-key: ${USDA_API_KEY:DEMO_KEY}

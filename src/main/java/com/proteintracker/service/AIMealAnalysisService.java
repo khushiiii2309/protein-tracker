@@ -16,11 +16,15 @@ public class AIMealAnalysisService {
 
     private static final Logger log = LoggerFactory.getLogger(AIMealAnalysisService.class);
 
-    private final GeminiVisionService visionService;
+    private final GeminiVisionService geminiVisionService;
+    private final ClaudeVisionService claudeVisionService;
     private final NutritionLookupService nutritionLookupService;
 
-    public AIMealAnalysisService(GeminiVisionService visionService, NutritionLookupService nutritionLookupService) {
-        this.visionService = visionService;
+    public AIMealAnalysisService(GeminiVisionService geminiVisionService,
+                                ClaudeVisionService claudeVisionService,
+                                NutritionLookupService nutritionLookupService) {
+        this.geminiVisionService = geminiVisionService;
+        this.claudeVisionService = claudeVisionService;
         this.nutritionLookupService = nutritionLookupService;
     }
 
@@ -85,69 +89,110 @@ public class AIMealAnalysisService {
     }
 
     /**
-     * Analyzes an uploaded meal photo. Uses the Gemini vision API when an API key
-     * is configured; falls back to a filename-based heuristic if no key is set, the
-     * call fails, or the model response can't be parsed - so meal upload never breaks.
+     * Analyzes an uploaded meal photo with multi-provider failover:
+     * 1. Primary: Google Gemini Vision API
+     * 2. Fallback: Anthropic Claude Vision API (if Gemini fails due to traffic/errors)
+     * 3. Final Fallback: Filename-based heuristic estimator (so upload never breaks)
      */
     public EstimatedMeal analyzeMealPhoto(MultipartFile photo, String storedFilename) {
-        if (visionService.isConfigured()) {
-            try {
-                byte[] imageBytes = photo.getBytes();
-                String mediaType = resolveMediaType(photo.getContentType());
-                EstimatedMeal result = visionService.analyze(imageBytes, mediaType);
-                if (result != null && result.foodItems != null && !result.foodItems.isEmpty()) {
-                    double totalProtein = 0;
-                    double totalCalories = 0;
-                    double totalCarbs = 0;
-                    double totalFat = 0;
+        byte[] imageBytes = null;
+        String mediaType = "image/jpeg";
+        try {
+            if (photo != null && !photo.isEmpty()) {
+                imageBytes = photo.getBytes();
+                mediaType = resolveMediaType(photo.getContentType());
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract image bytes from photo upload: {}", e.getMessage());
+        }
 
-                    for (EstimatedFoodItem item : result.foodItems) {
-                        // Ensure min/max quantities are populated
-                        if (item.minQuantity == null) {
-                            item.minQuantity = Math.round(item.estimatedQuantity * 0.85 * 10.0) / 10.0;
-                        }
-                        if (item.maxQuantity == null) {
-                            item.maxQuantity = Math.round(item.estimatedQuantity * 1.15 * 10.0) / 10.0;
-                        }
+        log.info("Starting meal image analysis for file: {}", storedFilename);
 
-                        NutritionLookupService.FoodMacros macros = nutritionLookupService.estimateMacros(
-                                item.foodName, item.estimatedQuantity, item.unit);
-                        item.proteinG = Math.round(macros.protein * 10.0) / 10.0;
-                        item.caloriesKcal = Math.round(macros.calories);
-                        item.carbsG = Math.round(macros.carbs * 10.0) / 10.0;
-                        item.fatG = Math.round(macros.fat * 10.0) / 10.0;
-
-                        totalProtein += item.proteinG;
-                        totalCalories += item.caloriesKcal;
-                        totalCarbs += item.carbsG;
-                        totalFat += item.fatG;
+        // Try Primary: Google Gemini Vision API
+        if (imageBytes != null) {
+            if (geminiVisionService.isConfigured()) {
+                try {
+                    log.info("Attempting primary AI analysis using Google Gemini (model: {})...", geminiVisionService.getModel());
+                    EstimatedMeal result = geminiVisionService.analyze(imageBytes, mediaType);
+                    if (isValidResult(result)) {
+                        return processMealResult(result);
                     }
-
-                    // Enforce rounding rules for cumulative totals
-                    result.totalProteinG = Math.round(totalProtein * 10.0) / 10.0;
-                    result.totalCaloriesKcal = Math.round(totalCalories);
-                    result.totalCarbsG = Math.round(totalCarbs * 10.0) / 10.0;
-                    result.totalFatG = Math.round(totalFat * 10.0) / 10.0;
-
-                    // Ensure confidences are populated
-                    if (result.detectionConfidence == null) {
-                        result.detectionConfidence = result.confidenceScore > 0 ? result.confidenceScore : 0.95;
-                    }
-                    if (result.portionConfidence == null) {
-                        result.portionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.9 : 0.72;
-                    }
-                    if (result.nutritionConfidence == null) {
-                        result.nutritionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.95 : 0.83;
-                    }
-
-                    return result;
+                    log.warn("Gemini vision response missing expected food items, attempting Claude fallback...");
+                } catch (Exception e) {
+                    log.warn("Gemini vision analysis failed ({}), attempting Claude fallback...", e.getMessage());
                 }
-                log.warn("Gemini vision response missing expected fields, falling back to heuristic estimate");
-            } catch (Exception e) {
-                log.warn("Gemini vision analysis failed ({}), falling back to heuristic estimate", e.getMessage());
+            } else {
+                log.info("Gemini API key is not configured; skipping Gemini provider.");
+            }
+
+            // Try Fallback: Anthropic Claude Vision API
+            if (claudeVisionService.isConfigured()) {
+                try {
+                    log.info("Attempting fallback AI analysis using Anthropic Claude (model: {})...", claudeVisionService.getModel());
+                    EstimatedMeal result = claudeVisionService.analyze(imageBytes, mediaType);
+                    if (isValidResult(result)) {
+                        return processMealResult(result);
+                    }
+                    log.warn("Claude vision response missing expected food items, falling back to heuristic estimate");
+                } catch (Exception e) {
+                    log.warn("Claude vision analysis failed ({}), falling back to heuristic estimate", e.getMessage());
+                }
+            } else {
+                log.info("Claude API key is not configured; skipping Claude provider.");
             }
         }
-        return analyzeMealPhotoHeuristic(storedFilename, photo.getOriginalFilename());
+
+        log.info("Using local heuristic estimation fallback for meal: {}", storedFilename);
+        return analyzeMealPhotoHeuristic(storedFilename, photo != null ? photo.getOriginalFilename() : null);
+    }
+
+    private boolean isValidResult(EstimatedMeal result) {
+        return result != null && result.foodItems != null && !result.foodItems.isEmpty();
+    }
+
+    private EstimatedMeal processMealResult(EstimatedMeal result) {
+        double totalProtein = 0;
+        double totalCalories = 0;
+        double totalCarbs = 0;
+        double totalFat = 0;
+
+        for (EstimatedFoodItem item : result.foodItems) {
+            if (item.minQuantity == null) {
+                item.minQuantity = Math.round(item.estimatedQuantity * 0.85 * 10.0) / 10.0;
+            }
+            if (item.maxQuantity == null) {
+                item.maxQuantity = Math.round(item.estimatedQuantity * 1.15 * 10.0) / 10.0;
+            }
+
+            NutritionLookupService.FoodMacros macros = nutritionLookupService.estimateMacros(
+                    item.foodName, item.estimatedQuantity, item.unit);
+            item.proteinG = Math.round(macros.protein * 10.0) / 10.0;
+            item.caloriesKcal = Math.round(macros.calories);
+            item.carbsG = Math.round(macros.carbs * 10.0) / 10.0;
+            item.fatG = Math.round(macros.fat * 10.0) / 10.0;
+
+            totalProtein += item.proteinG;
+            totalCalories += item.caloriesKcal;
+            totalCarbs += item.carbsG;
+            totalFat += item.fatG;
+        }
+
+        result.totalProteinG = Math.round(totalProtein * 10.0) / 10.0;
+        result.totalCaloriesKcal = Math.round(totalCalories);
+        result.totalCarbsG = Math.round(totalCarbs * 10.0) / 10.0;
+        result.totalFatG = Math.round(totalFat * 10.0) / 10.0;
+
+        if (result.detectionConfidence == null) {
+            result.detectionConfidence = result.confidenceScore > 0 ? result.confidenceScore : 0.95;
+        }
+        if (result.portionConfidence == null) {
+            result.portionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.9 : 0.72;
+        }
+        if (result.nutritionConfidence == null) {
+            result.nutritionConfidence = result.confidenceScore > 0 ? result.confidenceScore * 0.95 : 0.83;
+        }
+
+        return result;
     }
 
     private String resolveMediaType(String contentType) {

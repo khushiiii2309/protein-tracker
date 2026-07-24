@@ -17,16 +17,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Calls the Google Gemini API with a meal photo and asks for a structured
- * macro/ingredient estimate as JSON.
+ * Calls the Anthropic Claude API with a meal photo as a fallback provider when Gemini is unavailable.
  */
 @Component
-public class GeminiVisionService {
+public class ClaudeVisionService {
 
-    private static final Logger log = LoggerFactory.getLogger(GeminiVisionService.class);
+    private static final Logger log = LoggerFactory.getLogger(ClaudeVisionService.class);
 
-    private static final String API_URL_TEMPLATE =
-            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s";
+    private static final String API_URL = "https://api.anthropic.com/v1/messages";
+    private static final String ANTHROPIC_VERSION = "2023-06-01";
 
     private static final String SYSTEM_PROMPT = """
             You are a nutrition estimation assistant for a meal-tracking app. You will be \
@@ -64,9 +63,9 @@ public class GeminiVisionService {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    public GeminiVisionService(
-            @Value("${app.ai.gemini.api-key:}") String apiKey,
-            @Value("${app.ai.gemini.model:gemini-3.5-flash}") String model) {
+    public ClaudeVisionService(
+            @Value("${app.ai.anthropic.api-key:}") String apiKey,
+            @Value("${app.ai.anthropic.model:claude-3-5-sonnet-20241022}") String model) {
         this.apiKey = apiKey;
         this.model = model;
         this.httpClient = HttpClient.newBuilder()
@@ -78,9 +77,9 @@ public class GeminiVisionService {
     @jakarta.annotation.PostConstruct
     public void initLog() {
         if (isConfigured()) {
-            log.info("GeminiVisionService initialized with API key (model: {})", model);
+            log.info("ClaudeVisionService initialized with API key (model: {})", model);
         } else {
-            log.warn("GeminiVisionService initialized WITHOUT an API key. Set GEMINI_API_KEY env var to enable.");
+            log.warn("ClaudeVisionService initialized WITHOUT an API key. Set ANTHROPIC_API_KEY env var to enable.");
         }
     }
 
@@ -95,30 +94,38 @@ public class GeminiVisionService {
     public AIMealAnalysisService.EstimatedMeal analyze(byte[] imageBytes, String mediaType) throws Exception {
         String base64Image = Base64.getEncoder().encodeToString(imageBytes);
 
-        Map<String, Object> requestBody = Map.of(
-                "system_instruction", Map.of(
-                        "parts", List.of(Map.of("text", SYSTEM_PROMPT))
-                ),
-                "contents", List.of(Map.of(
-                        "role", "user",
-                        "parts", List.of(
-                                Map.of("inline_data", Map.of(
-                                        "mime_type", mediaType,
-                                        "data", base64Image
-                                )),
-                                Map.of("text", "Analyze this meal photo.")
-                        )
-                )),
-                "generationConfig", Map.of(
-                        "temperature", 0.2,
-                        "maxOutputTokens", 1024
-                )
+        Map<String, Object> imageSource = Map.of(
+                "type", "base64",
+                "media_type", mediaType,
+                "data", base64Image
         );
 
-        String url = String.format(API_URL_TEMPLATE, model, apiKey);
+        Map<String, Object> imageContent = Map.of(
+                "type", "image",
+                "source", imageSource
+        );
+
+        Map<String, Object> textContent = Map.of(
+                "type", "text",
+                "text", "Analyze this meal photo."
+        );
+
+        Map<String, Object> userMessage = Map.of(
+                "role", "user",
+                "content", List.of(imageContent, textContent)
+        );
+
+        Map<String, Object> requestBody = Map.of(
+                "model", model,
+                "max_tokens", 1024,
+                "system", SYSTEM_PROMPT,
+                "messages", List.of(userMessage)
+        );
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(API_URL))
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("content-type", "application/json")
                 .timeout(Duration.ofSeconds(45))
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
@@ -128,27 +135,22 @@ public class GeminiVisionService {
 
         if (response.statusCode() != 200) {
             throw new IllegalStateException(
-                    "Gemini API returned HTTP " + response.statusCode() + ": " + truncate(response.body()));
+                    "Claude API returned HTTP " + response.statusCode() + ": " + truncate(response.body()));
         }
 
         JsonNode root = objectMapper.readTree(response.body());
-        JsonNode candidates = root.path("candidates");
-        if (!candidates.isArray() || candidates.isEmpty()) {
-            throw new IllegalStateException("Gemini API response had no candidates: " + truncate(response.body()));
+        JsonNode content = root.path("content");
+        if (!content.isArray() || content.isEmpty()) {
+            throw new IllegalStateException("Claude API response had no content array: " + truncate(response.body()));
         }
 
-        JsonNode parts = candidates.get(0).path("content").path("parts");
-        if (!parts.isArray() || parts.isEmpty()) {
-            throw new IllegalStateException("Gemini API response had no content parts: " + truncate(response.body()));
-        }
-
-        String text = parts.get(0).path("text").asText();
+        String text = content.get(0).path("text").asText();
         String jsonText = extractJsonObject(text);
 
         AIMealAnalysisService.EstimatedMeal result =
                 objectMapper.readValue(jsonText, AIMealAnalysisService.EstimatedMeal.class);
 
-        log.info("Gemini vision analysis succeeded: {} ({} items, confidence {})",
+        log.info("Claude vision analysis succeeded: {} ({} items, confidence {})",
                 result.description, result.foodItems == null ? 0 : result.foodItems.size(), result.confidenceScore);
         return result;
     }
@@ -158,10 +160,11 @@ public class GeminiVisionService {
         HttpResponse<String> response = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 503 || attempt == maxAttempts) {
+            int status = response.statusCode();
+            if ((status != 502 && status != 503 && status != 429) || attempt == maxAttempts) {
                 return response;
             }
-            log.warn("Gemini API returned 503 (attempt {}/{}), retrying after backoff", attempt, maxAttempts);
+            log.warn("Claude API returned HTTP {} (attempt {}/{}), retrying after backoff", status, attempt, maxAttempts);
             Thread.sleep(1000L * attempt);
         }
         return response;
